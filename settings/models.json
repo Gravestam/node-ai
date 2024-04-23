@@ -1,0 +1,8 @@
+{
+	"description": "This file contains the models that can be used with the API.",
+	"list": [
+		"gpt-4-turbo",
+		"gpt-4-turbo-preview",
+		"gpt-3.5-turbo"
+	]
+}
