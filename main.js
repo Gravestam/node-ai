@@ -2,12 +2,13 @@
 import {
 	getPackageInfo,
 	exists,
-	writeToEnv,
 	fetchJson,
 	getSystemInfo,
 	replaceText,
-	readFile
+	readFile,
+	writeToUserSettings
 } from './modules/utils.js';
+import fetchEnv from './modules/envFetch.js';
 import { Command } from 'commander';
 import chk from 'chalk';
 import path from 'path';
@@ -16,7 +17,6 @@ import inquirer from 'inquirer';
 import { createSpinner } from 'nanospinner';
 import OpenAI from 'openai';
 import { execSync } from 'child_process';
-import pty from 'node-pty';
 
 global.appRoot = new URL('.', import.meta.url).pathname;
 
@@ -49,7 +49,7 @@ const main = async () => {
 			}
 
 			if (get === true) {
-				const apiKey = process.env[apiKeyName];
+				const apiKey = await fetchEnv(apiKeyName);
 
 				if (exists(apiKey) !== true) {
 					console.log(chk.redBright('API key not found'));
@@ -60,11 +60,7 @@ const main = async () => {
 				process.exit(0);
 			}
 
-			await writeToEnv({
-				key: apiKeyName,
-				value: newApiKey,
-				type: 'API key'
-			});
+			await writeToUserSettings({ key: apiKeyName, value: newApiKey, type: 'API key'})
 		});
 
 	program
@@ -86,7 +82,7 @@ const main = async () => {
 			}
 
 			if (get === true) {
-				const apiModel = process.env[apiModelName];
+				const apiModel = await fetchEnv(apiModelName);
 
 				if (exists(apiModel) !== true) {
 					console.log(
@@ -129,11 +125,7 @@ const main = async () => {
 				}
 			]);
 
-			await writeToEnv({
-				key: apiModelName,
-				value: selectedModel,
-				type: 'Model'
-			});
+			await writeToUserSettings({ key: apiModelName, value: selectedModel, type : 'Model' });
 		});
 
 	program
@@ -159,8 +151,8 @@ const main = async () => {
 				{ from: '{PROMPT}', to: fullPrompt }
 			]);
 
-			const apiKey = process.env[apiKeyName];
-			const model = process.env[apiModelName];
+			const apiKey = await fetchEnv(apiKeyName);
+			const model = await fetchEnv(apiModelName);
 
 			if (exists(apiKey) !== true) {
 				console.log(
@@ -203,31 +195,6 @@ const main = async () => {
 					process.exit(1);
 				});
 
-			// const response = {
-			// 	id: 'testID',
-			// 	object: 'chat.completion',
-			// 	created: 1731943991,
-			// 	model,
-			// 	usage: {
-			// 		promp_tokens: 300,
-			// 		completion_tokens: 20,
-			// 		total_tokens: 320
-			// 	},
-			// 	system_fingerprint: 'fp_test',
-			// 	choices: [
-			// 		{
-			// 			index: 0,
-			// 			message: {
-			// 				role: 'assistant',
-			// 				content:
-			// 					"echo 'Hello, World\ntest\nHello' | grep Hello"
-			// 			},
-			// 			logprobs: null,
-			// 			finish_reason: 'stop'
-			// 		}
-			// 	]
-			// };
-
 			spinner.success();
 
 			const {
@@ -263,7 +230,6 @@ const main = async () => {
 			const commandRaw = rChoices[0].message.content;
 
 			if (unsafe === true) {
-
 				execSync(commandRaw, { stdio: 'inherit', shell: true });
 				process.exit(0);
 			}
@@ -273,16 +239,15 @@ const main = async () => {
 					type: 'list',
 					name: 'selectAction',
 					message: `${chk.greenBright(commandRaw)} ${chk.blueBright('What do you want to do with the command?')}`,
-					choices: [ 'Run', 'Cancel' ]
+					choices: ['Run', 'Cancel']
 				}
 			]);
 
 			switch (selectAction) {
 				case 'Run':
 					try {
-
 						execSync(commandRaw, { stdio: 'inherit', shell: true });
-					}catch (error) {
+					} catch (error) {
 						console.log(chk.redBright(error.message));
 					}
 					break;

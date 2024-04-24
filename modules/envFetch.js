@@ -1,10 +1,20 @@
 import 'dotenv/config';
-import { exists } from './utils.js';
+import { exists, fetchJson } from './utils.js';
+import path from 'path';
 
-const fetchValue = (key) => {
-	const value = process.env[key];
+const fetchValue = async (key) => {
+	const envValue = process.env[key];
 
-	return exists(value) ? value : null;
+	const userSettingsPath = path.resolve(appRoot, 'settings/user_settings.json');
+
+	if (exists(envValue) === true) {
+
+		return envValue;
+	}
+
+	const userSettings = await fetchJson(userSettingsPath);
+
+	return userSettings[key];
 };
 
 export default fetchValue;
