@@ -1,22 +1,26 @@
 #!/usr/bin/env node
 import {
 	getPackageInfo,
-	fileExists,
 	exists,
-	readFile,
-	writeFile,
-	fetchJson
+	writeToEnv,
+	fetchJson,
+	getSystemInfo,
+	replaceText,
+	readFile
 } from './modules/utils.js';
 import { Command } from 'commander';
 import chk from 'chalk';
 import path from 'path';
 import 'dotenv/config';
 import inquirer from 'inquirer';
+import { createSpinner } from 'nanospinner';
+import OpenAI from 'openai';
+import { execSync } from 'child_process';
+import pty from 'node-pty';
 
 global.appRoot = new URL('.', import.meta.url).pathname;
 
 const packageInfo = await getPackageInfo();
-const envPath = path.resolve(appRoot, '.env');
 
 const apiKeyName = 'OPENAI_KEY';
 const apiModelName = 'OPENAI_MODEL';
@@ -56,66 +60,19 @@ const main = async () => {
 				process.exit(0);
 			}
 
-			const envFileExists = await fileExists(envPath);
-
-			if (envFileExists !== true) {
-				const envContent = `${apiKeyName}="${newApiKey}"`;
-
-				await writeFile(envPath, envContent);
-
-				console.log(chk.greenBright('API key set'));
-
-				process.exit(0);
-			}
-
-			const envFile = await readFile(envPath);
-
-			const envLines = envFile.split('\n');
-
-			// check if a line contains the API key, it it doesent, write it to the first empty line
-			const hasApiKey = envLines.some((line) =>
-				line.startsWith(apiKeyName)
-			);
-
-			if (!hasApiKey) {
-				const firstEmptyLine = envLines.findIndex(
-					(line) => line === ''
-				);
-
-				const newEnvLines = envLines.map((line, index) => {
-					if (index === firstEmptyLine) {
-						return `${apiKeyName}="${newApiKey}"`;
-					}
-					return line;
-				});
-
-				await writeFile(envPath, newEnvLines.join('\n'));
-
-				console.log(chk.greenBright('API key set'));
-
-				process.exit(0);
-			}
-
-			const newEnvLines = envLines.map((line) => {
-				if (line.startsWith(apiKeyName)) {
-					return `${apiKeyName}="${newApiKey}"`;
-				}
-				return line;
+			await writeToEnv({
+				key: apiKeyName,
+				value: newApiKey,
+				type: 'API key'
 			});
-
-			await writeFile(envPath, newEnvLines.join('\n'));
-
-			console.log(chk.greenBright('API key set'));
-
-			process.exit(0);
 		});
 
 	program
 		.command('model')
-		.option('--set', 'Set the API model')
-		.option('--get', 'Get the API model')
-		.option('--list', 'List available API models')
-		.description('Set or get the API model')
+		.option('--set', 'Set the model')
+		.option('--get', 'Get the model')
+		.option('--list', 'List available models')
+		.description('Set or get the model')
 		.action(async (options) => {
 			const { set, get, list } = options;
 
@@ -132,11 +89,15 @@ const main = async () => {
 				const apiModel = process.env[apiModelName];
 
 				if (exists(apiModel) !== true) {
-					console.log(chk.redBright('API model not found'));
+					console.log(
+						chk.redBright(
+							'Model not found, set it with --set option'
+						)
+					);
 					process.exit(1);
 				}
 
-				console.log(`${chk.greenBright('API model:')} ${apiModel}`);
+				console.log(`${apiModel}`);
 				process.exit(0);
 			}
 
@@ -144,79 +105,195 @@ const main = async () => {
 				const modelsData = await fetchJson(
 					path.resolve(appRoot, 'settings/models.json')
 				);
+
 				const list = modelsData.list || [];
 
-				console.log(chk.greenBright('Available API models:'));
+				console.log(chk.greenBright('Available models:'));
 				console.log(list.join('\n'));
+
 				process.exit(0);
 			}
 
-			const envFileExists = await fileExists(envPath);
-
-			// If --set option is not provided, prompt the user to select a model
 			const modelsData = await fetchJson(
 				path.resolve(appRoot, 'settings/models.json')
 			);
+
 			const modelsList = modelsData.list || [];
 
 			const { selectedModel } = await inquirer.prompt([
 				{
 					type: 'list',
 					name: 'selectedModel',
-					message: 'Select the API model:',
+					message: 'Select a model:',
 					choices: modelsList
 				}
 			]);
 
-			const newApiModel = selectedModel;
+			await writeToEnv({
+				key: apiModelName,
+				value: selectedModel,
+				type: 'Model'
+			});
+		});
 
-			const envContent = `${apiModelName}="${newApiModel}"`;
+	program
+		.command('shell')
+		.argument('<prompt...>', 'Prompt message')
+		.option('--unsafe', 'Disable safe mode')
+		.option('--debug', 'Enable debug mode')
+		.description('Prompt for a shell command and run it')
+		.action(async (prompt, options) => {
+			const { unsafe, debug } = options;
 
-			if (envFileExists !== true) {
-				await writeFile(envPath, envContent);
+			const systemInfo = await getSystemInfo();
 
-				console.log(chk.greenBright('API model set'));
+			const fullPrompt = prompt.join(' ');
 
-				process.exit(0);
-			}
-
-			const envFile = await readFile(envPath);
-
-			const envLines = envFile.split('\n');
-
-			const hasApiModel = envLines.some((line) =>
-				line.startsWith(apiModelName)
+			const getPrefixPrompt = await readFile(
+				path.resolve(appRoot, 'settings/prompt.txt')
 			);
 
-			if (!hasApiModel) {
-				const firstEmptyLine = envLines.findIndex(
-					(line) => line === ''
-				);
-				const newEnvLines = envLines.map((line, index) => {
-					if (index === firstEmptyLine) {
-						return `${apiModelName}="${newApiModel}"`;
-					}
+			const formatedPrefixPrompt = replaceText(getPrefixPrompt, [
+				{ from: '{SHELL}', to: systemInfo.shell },
+				{ from: '{OS}', to: systemInfo.operatingSystem },
+				{ from: '{PROMPT}', to: fullPrompt }
+			]);
 
-					return line;
+			const apiKey = process.env[apiKeyName];
+			const model = process.env[apiModelName];
+
+			if (exists(apiKey) !== true) {
+				console.log(
+					chk.redBright('API key not found'),
+					'\n',
+					'Set it with:',
+					'\n',
+					chk.greenBright(
+						`${packageInfo.bin[0]} apikey --set <value>`
+					)
+				);
+				process.exit(1);
+			}
+
+			if (exists(model) !== true) {
+				console.log(
+					chk.redBright('Model not found'),
+					'\n',
+					'Set it with:',
+					'\n',
+					chk.greenBright(`${packageInfo.bin[0]} model --set`)
+				);
+				process.exit(1);
+			}
+
+			const openai = new OpenAI({ apiKey });
+
+			const spinner = createSpinner('Fetching shell command').start();
+
+			const response = await openai.chat.completions
+				.create({
+					messages: [{ role: 'user', content: formatedPrefixPrompt }],
+					model
+				})
+				.catch((error) => {
+					spinner.error();
+
+					console.log(chk.redBright(error.message));
+
+					process.exit(1);
 				});
-				await writeFile(envPath, newEnvLines.join('\n'));
-				console.log(chk.greenBright('API model set'));
+
+			// const response = {
+			// 	id: 'testID',
+			// 	object: 'chat.completion',
+			// 	created: 1731943991,
+			// 	model,
+			// 	usage: {
+			// 		promp_tokens: 300,
+			// 		completion_tokens: 20,
+			// 		total_tokens: 320
+			// 	},
+			// 	system_fingerprint: 'fp_test',
+			// 	choices: [
+			// 		{
+			// 			index: 0,
+			// 			message: {
+			// 				role: 'assistant',
+			// 				content:
+			// 					"echo 'Hello, World\ntest\nHello' | grep Hello"
+			// 			},
+			// 			logprobs: null,
+			// 			finish_reason: 'stop'
+			// 		}
+			// 	]
+			// };
+
+			spinner.success();
+
+			const {
+				id: rId,
+				object: rObject,
+				created: rCreated,
+				model: rModel,
+				usage: rUsage,
+				system_fingerprint: rFingerprint,
+				choices: rChoices
+			} = response;
+
+			if (debug === true) {
+				console.log(`${chk.yellow('--- DEBUG START ---')}`);
+				console.log(`${chk.green('ID:')} ${rId}`);
+				console.log(`${chk.green('Object:')} ${rObject}`);
+				console.log(`${chk.green('Created:')} ${rCreated}`);
+				console.log(`${chk.green('Model:')} ${rModel}`);
+				console.log(
+					`${chk.green('Usage:')} ${JSON.stringify(rUsage, null, 2)}`
+				);
+				console.log(`${chk.green('Fingerprint:')} ${rFingerprint}`);
+				console.log(
+					`${chk.green('Choises:')} ${JSON.stringify(rChoices, null, 2)}`
+				);
+				console.log(`${chk.green('Prompt:')} ${formatedPrefixPrompt}`);
+				console.log(
+					`${chk.green('System info:')} ${JSON.stringify(systemInfo, null, 2)}`
+				);
+				console.log(`${chk.yellow('--- DEBUG END ---')}`);
+			}
+
+			const commandRaw = rChoices[0].message.content;
+
+			if (unsafe === true) {
+
+				execSync(commandRaw, { stdio: 'inherit', shell: true });
 				process.exit(0);
 			}
 
-			const newEnvLines = envLines.map((line) => {
-				if (line.startsWith(apiModelName)) {
-					return `${apiModelName}="${newApiModel}"`;
+			const { selectAction } = await inquirer.prompt([
+				{
+					type: 'list',
+					name: 'selectAction',
+					message: `${chk.greenBright(commandRaw)} ${chk.blueBright('What do you want to do with the command?')}`,
+					choices: [ 'Run', 'Cancel' ]
 				}
-				return line;
-			});
+			]);
 
-			await writeFile(envPath, newEnvLines.join('\n'));
+			switch (selectAction) {
+				case 'Run':
+					try {
 
-			console.log(chk.greenBright('API model set'));
+						execSync(commandRaw, { stdio: 'inherit', shell: true });
+					}catch (error) {
+						console.log(chk.redBright(error.message));
+					}
+					break;
+				default:
+					console.log(chk.redBright('Command canceled'));
+					break;
+			}
 
 			process.exit(0);
 		});
+
 	program.parse(process.argv);
 };
 
